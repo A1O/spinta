@@ -1101,8 +1101,8 @@ class Config:
     sync_retry_count: int
     sync_retry_delay_range: tuple[float]
     languages: List[str]
+    # For CLI commands `spinta copy` and `spinta check --check-names`
     check_names: bool = False
-    check_property_names: bool = False
     # MB
     max_api_file_size: int
     max_error_count_on_insert: int
