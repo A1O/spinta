@@ -9,7 +9,7 @@ Configuration:
     - jdbc_driver_name: "com.sas.rio.MVADriver"
 
 Example connection URL:
-    sas+jdbc://user:pass@host:port/?schema=libname
+    sas+jdbc://user:pass@host:port/?libname=sas_libname
 """
 
 import logging
@@ -138,43 +138,25 @@ class SASCompiler(SQLCompiler):
         Returns:
             The compiled table name with schema.
         """
-        # Store original schema to restore it later
-        original_schema = table.schema
-        schema_modified = False
+        # Get the compiled table name using parent logic
+        result = super().visit_table(
+            table,
+            asfrom=asfrom,
+            iscrud=iscrud,
+            ashint=ashint,
+            fromhints=fromhints,
+            use_schema=use_schema,
+            crud_table=crud_table,
+            **kw,
+        )
 
-        try:
-            # CRITICAL FIX: If table.schema is None but we have a default_schema_name, set it
-            # This ensures SAS tables are always qualified with the library name
-            if asfrom and not table.schema:
-                # Access self.dialect directly, as it's guaranteed to be a SASDialect instance at this point
-                # and hasattr check is sufficient for dynamic attribute access.
-                if hasattr(self.dialect, "default_schema_name") and self.dialect.default_schema_name:
-                    table.schema = self.dialect.default_schema_name
-                    schema_modified = True
+        # For SAS, append (OBS=n) to the table reference when limit is present
+        # This must be done in the FROM clause, not at the end of the query
+        if asfrom and hasattr(self, "_sas_current_limit") and self._sas_current_limit is not None:
+            result += f" (OBS={self._sas_current_limit})"
+            logger.debug(f"Applied SAS limit: {result}")
 
-            # Get the compiled table name using parent logic
-            result = super().visit_table(
-                table,
-                asfrom=asfrom,
-                iscrud=iscrud,
-                ashint=ashint,
-                fromhints=fromhints,
-                use_schema=use_schema,
-                crud_table=crud_table,
-                **kw,
-            )
-
-            # For SAS, append (OBS=n) to the table reference when limit is present
-            # This must be done in the FROM clause, not at the end of the query
-            if asfrom and hasattr(self, "_sas_current_limit") and self._sas_current_limit is not None:
-                result += f" (OBS={self._sas_current_limit})"
-                logger.debug(f"Applied SAS limit: {result}")
-
-            return result
-        finally:
-            # Restore original schema if we modified it
-            if schema_modified:
-                table.schema = original_schema
+        return result
 
     def limit_clause(self, select, **kw):
         """
@@ -329,8 +311,6 @@ class SASDialect(SASIntrospectionMixin, BaseDialect, DefaultDialect):
         """
         Initialize dialect with connection-specific settings and fallback mechanisms.
 
-        Extracts the default schema name from the URL query parameters if available.
-
         Args:
             connection: Database connection object
         """
@@ -339,21 +319,9 @@ class SASDialect(SASIntrospectionMixin, BaseDialect, DefaultDialect):
             if hasattr(super(SASDialect, self), "initialize"):
                 super(SASDialect, self).initialize(connection)
 
-            # Extract schema from URL query parameters if available
-            if hasattr(self, "url") and self.url and self.url.query:
-                schema_from_url = self.url.query.get("schema")
-                logger.debug(f"SAS dialect: Found schema in URL query: {schema_from_url}")
-                self.default_schema_name = schema_from_url
-            else:
-                logger.debug("SAS dialect: No schema found in URL query, using empty string")
-                self.default_schema_name = ""
-
-            logger.debug(f"SAS dialect: default_schema_name set to: '{self.default_schema_name}'")
-
         except Exception as e:
             # Log initialization errors but don't fail completely
-            logger.warning(f"SAS dialect initialization failed: {e}. Using fallback settings.")
-            self.default_schema_name = ""
+            logger.warning(f"SAS dialect initialization failed: {e}")
 
     def create_connect_args(self, url):
         """
@@ -391,12 +359,9 @@ class SASDialect(SASIntrospectionMixin, BaseDialect, DefaultDialect):
                 "applyFormats": "false",
             }
 
-            # Add schema to driver_args if present in query
-            if url.query:
-                schema = url.query.get("schema")
-                if schema:
-                    driver_args["schema"] = schema
-                    logger.debug(f"Added schema '{schema}' to driver_args")
+            # NOTE: We do not pass 'libname' or 'schema' from URL to driver_args['schema']
+            # because the SAS JDBC driver might interpret it differently or it might conflict.
+            # Schema qualification is handled by SQLAlchemy via dbschema in the Table object.
 
             # Log driver_args with types for debugging
             logger.debug(f"Driver args with types: {[(k, type(v).__name__, v) for k, v in driver_args.items()]}")

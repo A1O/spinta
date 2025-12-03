@@ -62,8 +62,24 @@ class TestSASDialect:
         assert kwargs["driver_args"]["user"] == "testuser"
         assert kwargs["driver_args"]["password"] == "testpass"
 
-    def test_create_connect_args_with_schema(self):
-        """Test URL parsing with schema parameter in query string."""
+    def test_create_connect_args_with_libname(self):
+        """Test URL parsing with libname parameter in query string."""
+        url = make_url("sas+jdbc://testuser:testpass@localhost:8591/?libname=MYLIB")
+        dialect = SASDialect()
+
+        args, kwargs = dialect.create_connect_args(url)
+
+        # Verify kwargs structure
+        assert kwargs["jclassname"] == "com.sas.rio.MVADriver"
+        assert kwargs["url"] == "jdbc:sasiom://localhost:8591"
+        assert kwargs["driver_args"]["user"] == "testuser"
+        assert kwargs["driver_args"]["password"] == "testpass"
+        # Ensure 'libname' or 'schema' is NOT passed to driver_args
+        assert "libname" not in kwargs["driver_args"]
+        assert "schema" not in kwargs["driver_args"]
+
+    def test_create_connect_args_with_schema_ignored(self):
+        """Test URL parsing with schema parameter is ignored in driver_args."""
         url = make_url("sas+jdbc://testuser:testpass@localhost:8591/?schema=MYLIB")
         dialect = SASDialect()
 
@@ -74,6 +90,8 @@ class TestSASDialect:
         assert kwargs["url"] == "jdbc:sasiom://localhost:8591"
         assert kwargs["driver_args"]["user"] == "testuser"
         assert kwargs["driver_args"]["password"] == "testpass"
+        # Ensure schema is NOT passed to driver_args
+        assert "schema" not in kwargs["driver_args"]
 
     def test_create_connect_args_no_port(self):
         """Test URL parsing when no port is specified."""
@@ -260,9 +278,6 @@ class TestSASDialect:
         # Should not raise any exception
         dialect.initialize(mock_connection)
 
-        # Verify default_schema_name is initialized
-        assert dialect.default_schema_name == ""
-
     @patch("sqlalchemy.dialects.registry")
     def test_register_sas_dialect(self, mock_registry):
         """Test that the dialect registration function works correctly."""
@@ -371,8 +386,6 @@ class TestSASDialect:
 
         # Test that initialize works normally (no parent initialize method exists)
         dialect.initialize(mock_connection)
-        # Verify default_schema_name is set to fallback value
-        assert dialect.default_schema_name == ""
 
     def test_create_connect_args_error_handling(self):
         """Test that create_connect_args handles errors gracefully."""
