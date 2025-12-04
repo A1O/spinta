@@ -74,9 +74,9 @@ class TestSASDialect:
         assert kwargs["url"] == "jdbc:sasiom://localhost:8591"
         assert kwargs["driver_args"]["user"] == "testuser"
         assert kwargs["driver_args"]["password"] == "testpass"
-        # Ensure 'libname' or 'schema' is NOT passed to driver_args
+        # Ensure 'libname' is mapped to 'schema' in driver_args
         assert "libname" not in kwargs["driver_args"]
-        assert "schema" not in kwargs["driver_args"]
+        assert kwargs["driver_args"]["schema"] == "MYLIB"
 
     def test_create_connect_args_with_schema_ignored(self):
         """Test URL parsing with schema parameter is ignored in driver_args."""
@@ -90,7 +90,7 @@ class TestSASDialect:
         assert kwargs["url"] == "jdbc:sasiom://localhost:8591"
         assert kwargs["driver_args"]["user"] == "testuser"
         assert kwargs["driver_args"]["password"] == "testpass"
-        # Ensure schema is NOT passed to driver_args
+        # Ensure schema is NOT passed to driver_args (only libname is supported now)
         assert "schema" not in kwargs["driver_args"]
 
     def test_create_connect_args_no_port(self):

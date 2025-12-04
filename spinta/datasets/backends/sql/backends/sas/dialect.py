@@ -359,9 +359,14 @@ class SASDialect(SASIntrospectionMixin, BaseDialect, DefaultDialect):
                 "applyFormats": "false",
             }
 
-            # NOTE: We do not pass 'libname' or 'schema' from URL to driver_args['schema']
-            # because the SAS JDBC driver might interpret it differently or it might conflict.
-            # Schema qualification is handled by SQLAlchemy via dbschema in the Table object.
+            # Add libname to driver_args as 'schema' if present in query.
+            # This is required for the SAS JDBC driver to initialize the library
+            # and make it accessible for queries.
+            if url.query:
+                libname = url.query.get("libname")
+                if libname:
+                    driver_args["schema"] = libname
+                    logger.debug(f"Added schema '{libname}' to driver_args (mapped from libname)")
 
             # Log driver_args with types for debugging
             logger.debug(f"Driver args with types: {[(k, type(v).__name__, v) for k, v in driver_args.items()]}")
