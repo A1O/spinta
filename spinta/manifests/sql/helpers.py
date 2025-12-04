@@ -66,18 +66,20 @@ def read_schema(context: Context, path: str, prepare: str = None, dataset_name: 
 
     # Extract schema from URL query parameters if not set by prepare
     if schema is None:
-        schema = url.query.get("schema")
+        if url.drivername.startswith("sas"):
+            # For SAS, strict check for 'libname'
+            libname = url.query.get("libname")
+            if not libname:
+                raise ValueError("SAS connection DSN must contain 'libname' query parameter (e.g., ?libname=MYLIB).")
+            # For SAS, we do not support 'schema' parameter anymore
+            if url.query.get("schema"):
+                raise ValueError("SAS connection DSN should not use 'schema' parameter. Use 'libname' instead.")
+            schema = libname
+        else:
+            # For other dialects, use standard 'schema' parameter
+            schema = url.query.get("schema")
 
     insp = sa.inspect(engine)
-
-    # Ensure schema is properly set for SAS dialect
-    if hasattr(insp, "dialect") and hasattr(insp.dialect, "default_schema_name"):
-        if schema is None and insp.dialect.default_schema_name:
-            schema = insp.dialect.default_schema_name
-        elif schema is None:
-            # For SAS, if no schema is set, try to get it from the URL again
-            # This handles the case where the inspector is created before dialect initialization
-            schema = url.query.get("schema")
 
     table_mapper = [
         {

@@ -37,29 +37,27 @@ class SAS(Sql):
         """
         Initialize the SAS backend.
 
-        Extracts schema from the DSN URL if not already set.
+        Extracts libname from the DSN URL if not already set.
         """
         super().__init__(**kwargs)
-        # Extract schema from DSN URL if not already set
+        # Extract libname from DSN URL if not already set
         if hasattr(self, "dsn") and self.dsn and not self.dbschema:
             from sqlalchemy.engine.url import make_url
 
             url = make_url(self.dsn)
-            schema = url.query.get("schema")
-            if schema:
-                self.dbschema = schema
+            libname = url.query.get("libname")
+            if libname:
+                self.dbschema = libname
 
     def get_table(self, model: Model, name: str | None = None) -> sa.Table:
         """
         Get or create a SQLAlchemy Table object for a model.
 
-        Overrides the base implementation to handle SAS-specific schema resolution
-        from the dialect's default_schema_name.
+        Overrides the base implementation to handle SAS-specific schema resolution.
 
         SAS requires special handling because:
         1. Schema names are called "libraries" in SAS terminology
-        2. The schema may be specified in the URL query parameters
-        3. The dialect stores the default schema name after initialization
+        2. The schema may be specified in the URL query parameters (libname)
 
         Args:
             model: The model to get the table for
@@ -70,10 +68,8 @@ class SAS(Sql):
         """
         name = name or model.external.name
 
-        # Use dialect's default_schema_name if backend's dbschema is not set
+        # Use backend's dbschema
         effective_schema = self.dbschema
-        if not effective_schema and hasattr(self.engine.dialect, "default_schema_name"):
-            effective_schema = self.engine.dialect.default_schema_name
 
         if effective_schema:
             key = f"{effective_schema}.{name}"
@@ -81,10 +77,6 @@ class SAS(Sql):
             key = name
 
         if key not in self.schema.tables:
-            # Ensure the dialect has the correct schema set before reflection
-            if hasattr(self.engine.dialect, "default_schema_name"):
-                self.engine.dialect.default_schema_name = effective_schema
-
             # Create table with schema - SQLAlchemy will store it with the schema in the key
             sa.Table(name, self.schema, autoload_with=self.engine, schema=effective_schema)
 
