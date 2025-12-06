@@ -76,7 +76,7 @@ class SASCompiler(compiler.SQLCompiler):
         return ""
 
 
-class SASDialect(default.DefaultDialect, SASIntrospectionMixin):
+class SASDialect(SASIntrospectionMixin, default.DefaultDialect):
     """
     SQLAlchemy Dialect for SAS.
 
