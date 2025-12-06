@@ -319,6 +319,22 @@ class SASDialect(SASIntrospectionMixin, BaseDialect, DefaultDialect):
             if hasattr(super(SASDialect, self), "initialize"):
                 super(SASDialect, self).initialize(connection)
 
+            # Extract schema from URL query parameters if available
+            # Check for both 'schema' and 'libname' parameters
+            if hasattr(self, "url") and self.url and self.url.query:
+                schema_from_url = self.url.query.get("schema") or self.url.query.get("libname")
+                if schema_from_url:
+                    logger.debug(f"SAS dialect: Found schema/libname in URL query: {schema_from_url}")
+                    self.default_schema_name = schema_from_url
+                else:
+                    logger.debug("SAS dialect: No schema or libname found in URL query, using empty string")
+                    self.default_schema_name = ""
+            else:
+                logger.debug("SAS dialect: No URL query parameters found, using empty string")
+                self.default_schema_name = ""
+
+            logger.debug(f"SAS dialect: default_schema_name set to: '{self.default_schema_name}'")
+
         except Exception as e:
             # Log initialization errors but don't fail completely
             logger.warning(f"SAS dialect initialization failed: {e}")
@@ -359,14 +375,18 @@ class SASDialect(SASIntrospectionMixin, BaseDialect, DefaultDialect):
                 "applyFormats": "false",
             }
 
-            # Add libname to driver_args as 'schema' if present in query.
-            # This is required for the SAS JDBC driver to initialize the library
-            # and make it accessible for queries.
+            # Add schema/libname to driver_args if present in query
             if url.query:
-                libname = url.query.get("libname")
-                if libname:
-                    driver_args["schema"] = libname
-                    logger.debug(f"Added schema '{libname}' to driver_args (mapped from libname)")
+                # Support both 'schema' and 'libname' parameters
+                # 'libname' is commonly used in SAS DSNs but driver often expects 'schema'
+                schema = url.query.get("schema") or url.query.get("libname")
+
+                if schema:
+                    # Map to 'schema' property which is standard for the driver
+                    driver_args["schema"] = schema
+                    # Also map to 'libname' property as requested for debugging
+                    driver_args["libname"] = schema
+                    logger.debug(f"Added schema/libname '{schema}' to driver_args")
 
             # Log driver_args with types for debugging
             logger.debug(f"Driver args with types: {[(k, type(v).__name__, v) for k, v in driver_args.items()]}")

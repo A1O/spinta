@@ -90,8 +90,25 @@ class TestSASDialect:
         assert kwargs["url"] == "jdbc:sasiom://localhost:8591"
         assert kwargs["driver_args"]["user"] == "testuser"
         assert kwargs["driver_args"]["password"] == "testpass"
-        # Ensure schema is NOT passed to driver_args (only libname is supported now)
-        assert "schema" not in kwargs["driver_args"]
+        # Verify schema mapping
+        assert kwargs["driver_args"]["schema"] == "MYLIB"
+        assert kwargs["driver_args"]["libname"] == "MYLIB"
+
+    def test_create_connect_args_with_libname(self):
+        """Test URL parsing with libname parameter in query string."""
+        url = make_url("sas+jdbc://testuser:testpass@localhost:8591/?libname=MYLIB")
+        dialect = SASDialect()
+
+        args, kwargs = dialect.create_connect_args(url)
+
+        # Verify kwargs structure
+        assert kwargs["jclassname"] == "com.sas.rio.MVADriver"
+        assert kwargs["url"] == "jdbc:sasiom://localhost:8591"
+        assert kwargs["driver_args"]["user"] == "testuser"
+        assert kwargs["driver_args"]["password"] == "testpass"
+        # Verify libname mapping to schema
+        assert kwargs["driver_args"]["schema"] == "MYLIB"
+        assert kwargs["driver_args"]["libname"] == "MYLIB"
 
     def test_create_connect_args_no_port(self):
         """Test URL parsing when no port is specified."""
@@ -277,6 +294,33 @@ class TestSASDialect:
 
         # Should not raise any exception
         dialect.initialize(mock_connection)
+
+        # Verify default_schema_name is initialized
+        assert dialect.default_schema_name == ""
+
+    def test_initialize_with_libname(self):
+        """Test dialect initialization with libname in URL."""
+        dialect = SASDialect()
+        dialect.url = make_url("sas+jdbc://user:pass@host:8591/?libname=STPSAMP")
+        mock_connection = Mock()
+
+        # Should not raise any exception
+        dialect.initialize(mock_connection)
+
+        # Verify default_schema_name is initialized from libname
+        assert dialect.default_schema_name == "STPSAMP"
+
+    def test_initialize_with_schema(self):
+        """Test dialect initialization with schema in URL."""
+        dialect = SASDialect()
+        dialect.url = make_url("sas+jdbc://user:pass@host:8591/?schema=STPSAMP")
+        mock_connection = Mock()
+
+        # Should not raise any exception
+        dialect.initialize(mock_connection)
+
+        # Verify default_schema_name is initialized from schema
+        assert dialect.default_schema_name == "STPSAMP"
 
     @patch("sqlalchemy.dialects.registry")
     def test_register_sas_dialect(self, mock_registry):
