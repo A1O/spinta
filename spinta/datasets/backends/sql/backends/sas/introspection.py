@@ -24,6 +24,15 @@ class SASIntrospectionMixin:
             return value.decode('utf-8', errors='replace')
         return str(value)
 
+    def _escape_param(self, value: str) -> str:
+        """
+        Escapes a parameter value for use in a SAS SQL string literal.
+        Replaces single quotes with two single quotes.
+        """
+        if value is None:
+            return ''
+        return str(value).replace("'", "''")
+
     def get_schema_names(self, connection, **kw):
         """
         Retrieve list of schema (library) names.
@@ -44,15 +53,18 @@ class SASIntrospectionMixin:
             if schema is None:
                 schema = self.default_schema_name
 
-            query = """
+            # Use interpolated string with escaping instead of parameters
+            # to work around potential JDBC driver issues with params in introspection queries
+            libname_val = self._escape_param(schema.upper() if schema else '')
+
+            query = f"""
             SELECT memname
             FROM dictionary.tables
-            WHERE libname = ? AND memtype = 'DATA'
+            WHERE libname = '{libname_val}' AND memtype = 'DATA'
             ORDER BY memname
             """
 
-            # SAS JDBC params are strictly positional ?
-            result = connection.execute(query, (schema.upper() if schema else None,))
+            result = connection.execute(query)
             return [self._safe_value_to_str(row[0]).strip() for row in result]
         except Exception as e:
             logger.error(f"Failed to retrieve table names for schema {schema}: {e}")
@@ -66,13 +78,15 @@ class SASIntrospectionMixin:
             if schema is None:
                 schema = self.default_schema_name
 
-            query = """
+            libname_val = self._escape_param(schema.upper() if schema else '')
+
+            query = f"""
             SELECT memname
             FROM dictionary.tables
-            WHERE libname = ? AND memtype = 'VIEW'
+            WHERE libname = '{libname_val}' AND memtype = 'VIEW'
             ORDER BY memname
             """
-            result = connection.execute(query, (schema.upper() if schema else None,))
+            result = connection.execute(query)
             return [self._safe_value_to_str(row[0]).strip() for row in result]
         except Exception as e:
             logger.error(f"Failed to retrieve view names for schema {schema}: {e}")
@@ -86,7 +100,10 @@ class SASIntrospectionMixin:
             if schema is None:
                 schema = self.default_schema_name
 
-            query = """
+            libname_val = self._escape_param(schema.upper() if schema else '')
+            memname_val = self._escape_param(table_name.upper())
+
+            query = f"""
             SELECT
                 name,
                 type,
@@ -95,11 +112,11 @@ class SASIntrospectionMixin:
                 label,
                 notnull
             FROM dictionary.columns
-            WHERE libname = ? AND memname = ?
+            WHERE libname = '{libname_val}' AND memname = '{memname_val}'
             ORDER BY varnum
             """
 
-            result = connection.execute(query, (schema.upper() if schema else None, table_name.upper()))
+            result = connection.execute(query)
 
             columns = []
             for row in result:
@@ -142,17 +159,20 @@ class SASIntrospectionMixin:
             if schema is None:
                 schema = self.default_schema_name
 
-            query = """
+            libname_val = self._escape_param(schema.upper() if schema else '')
+            memname_val = self._escape_param(table_name.upper())
+
+            query = f"""
             SELECT
                 indxname,
                 name,
                 unique
             FROM dictionary.indexes
-            WHERE libname = ? AND memname = ?
+            WHERE libname = '{libname_val}' AND memname = '{memname_val}'
             ORDER BY indxname, indxpos
             """
 
-            result = connection.execute(query, (schema.upper() if schema else None, table_name.upper()))
+            result = connection.execute(query)
 
             indexes = {}
             for row in result:
@@ -175,13 +195,16 @@ class SASIntrospectionMixin:
             if schema is None:
                 schema = self.default_schema_name
 
-            query = """
+            libname_val = self._escape_param(schema.upper() if schema else '')
+            memname_val = self._escape_param(table_name.upper())
+
+            query = f"""
             SELECT memlabel
             FROM dictionary.tables
-            WHERE libname = ? AND memname = ?
+            WHERE libname = '{libname_val}' AND memname = '{memname_val}'
             """
 
-            result = connection.execute(query, (schema.upper() if schema else None, table_name.upper()))
+            result = connection.execute(query)
             row = result.fetchone()
             if row and row[0]:
                 return {"text": self._safe_value_to_str(row[0]).strip()}
@@ -195,12 +218,15 @@ class SASIntrospectionMixin:
             if schema is None:
                 schema = self.default_schema_name
 
-            query = """
+            libname_val = self._escape_param(schema.upper() if schema else '')
+            memname_val = self._escape_param(table_name.upper())
+
+            query = f"""
             SELECT COUNT(*)
             FROM dictionary.tables
-            WHERE libname = ? AND memname = ? AND memtype = 'DATA'
+            WHERE libname = '{libname_val}' AND memname = '{memname_val}' AND memtype = 'DATA'
             """
-            result = connection.execute(query, (schema.upper() if schema else None, table_name.upper()))
+            result = connection.execute(query)
             row = result.fetchone()
             return int(row[0]) > 0 if row else False
         except Exception as e:
