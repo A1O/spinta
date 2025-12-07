@@ -104,7 +104,6 @@ CONFIG = {
             "sql/oracle": "spinta.datasets.backends.sql.backends.oracle.ufuncs.query.components:OracleQueryBuilder",
             "sql/mysql": "spinta.datasets.backends.sql.backends.mysql.ufuncs.query.components:MySQLQueryBuilder",
             "sql/mariadb": "spinta.datasets.backends.sql.backends.mariadb.ufuncs.query.components:MariaDBQueryBuilder",
-            "sql/sas": "spinta.datasets.backends.sql.backends.sas.ufuncs.query.components:SASQueryBuilder",
             "dask": "spinta.datasets.backends.dataframe.ufuncs.query.components:DaskDataFrameQueryBuilder",
             "soap": "spinta.datasets.backends.dataframe.backends.soap.ufuncs.components:SoapQueryBuilder",
         },

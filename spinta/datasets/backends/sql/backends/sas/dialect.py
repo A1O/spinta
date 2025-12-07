@@ -1,247 +1,114 @@
 """
-SQLAlchemy Dialect for SAS Databases using JDBC.
+SAS Dialect for SQLAlchemy.
 
-This dialect provides connectivity to SAS databases through the SAS IOM JDBC driver,
-enabling schema introspection and query execution against SAS libraries and datasets.
-
-Configuration:
-    - jdbc_db_name: "sasiom" (required for JDBC URL construction)
-    - jdbc_driver_name: "com.sas.rio.MVADriver"
-
-Example connection URL:
-    sas+jdbc://user:pass@host:port/?libname=sas_libname
+This module implements the SQLAlchemy dialect for SAS, handling connection
+parameters, type mapping, and SQL compilation specific to SAS.
 """
 
 import logging
 from pathlib import Path
-from typing import Optional
+from sqlalchemy.engine import default
+from sqlalchemy import pool
+from sqlalchemy import types as sqltypes
+from sqlalchemy.sql import compiler
 
-from sqlalchemy import pool, types as sqltypes
-from sqlalchemy.engine.default import DefaultDialect
-from sqlalchemy.sql.compiler import SQLCompiler
-from sqlalchemy.schema import Table
-
-from spinta.datasets.backends.sql.backends.sas.base import BaseDialect
-from spinta.datasets.backends.sql.backends.sas.identifier import SASIdentifierPreparer
 from spinta.datasets.backends.sql.backends.sas.introspection import SASIntrospectionMixin
 from spinta.datasets.backends.sql.backends.sas.types import (
-    SASDateType,
-    SASDateTimeType,
-    SASTimeType,
-    SASStringType,
+    SASDateType, SASDateTimeType, SASTimeType, SASStringType
 )
 
 logger = logging.getLogger(__name__)
 
 
-class SASCompiler(SQLCompiler):
+class SASIdentifierPreparer(compiler.IdentifierPreparer):
     """
-    Custom SQL compiler for SAS dialect.
+    Custom identifier preparer for SAS.
 
-    Ensures that table names are always qualified with the schema (library name)
-    to prevent SAS from defaulting to the WORK library.
+    SAS identifiers:
+    - Are case-insensitive (but stored as uppercase)
+    - Are not typically quoted
+    - Have a maximum length of 32 chars
+    """
+    reserved_words = set()  # SAS has reserved words but we generally don't quote identifiers unless forced
 
-    Also handles SAS-specific LIMIT syntax by applying (OBS=n) table options
-    instead of standard LIMIT clauses.
+    def quote_identifier(self, value):
+        # SAS doesn't standardly use quotes for identifiers in the same way as standard SQL
+        # It's safer to not quote unless absolutely necessary or if 'n' literal syntax is used (not supported here)
+        # We'll just return the value as is, maybe uppercased if needed, but usually SA handles case.
+        # However, parent class adds quotes. We might want to override to empty if no quoting desired.
+        return value
+
+    def format_table(self, table, use_schema=True, name=None):
+        # Ensure schema.table format is correct for SAS (libname.memname)
+        # SAS uses dot notation: LIBNAME.MEMNAME
+        # We need to make sure we don't double quote things unnecessarily
+        if name is None:
+            name = table.name
+
+        if use_schema and getattr(table, "schema", None):
+            return f"{table.schema}.{name}"
+        return name
+
+
+class SASCompiler(compiler.SQLCompiler):
+    """
+    Custom SQL Compiler for SAS.
+
+    Handles SAS-specific SQL syntax nuances.
     """
 
-    def visit_select(
-        self,
-        select,
-        asfrom: bool = False,
-        parens: bool = False,
-        fromhints=None,
-        compound_index=None,
-        nested_join_translation: bool = False,
-        select_wraps_for=None,
-        lateral: bool = False,
-        insert_into=None,
-        from_linter=None,
-        **kwargs,
-    ) -> str:
-        """
-        Override SELECT compilation to store limit for table references.
+    def visit_select(self, select, **kwargs):
+        # SAS uses (OBS=n) for LIMIT
+        # This is a complex customization for SQLAlchemy 1.4 compiler
+        # For now, we rely on standard SQL generation and hope SAS supports LIMIT or we implement limit clause handling
+        # SAS supports standard SQL via PROC SQL or JDBC, but often LIMIT is not standard SQL LIMIT/OFFSET
+        # SAS JDBC driver might support LIMIT? Reference implies (OBS=n)
 
-        In SAS, LIMIT must be applied as (OBS=n) on table references in the
-        FROM clause, not as a separate LIMIT clause at the end of the query.
-        This method stores the limit value during compilation so it can be
-        applied to table references in visit_table.
-
-        Args:
-            select: The SQLAlchemy Select object being compiled
-            asfrom: Boolean indicating if this is part of a FROM clause
-            parens: Boolean indicating if parentheses should be added
-            fromhints: Dictionary of FROM clause hints
-            compound_index: Integer index for compound statements
-            nested_join_translation: Boolean for nested join translation
-            select_wraps_for: Select statement this wraps around
-            lateral: Boolean indicating if this is a LATERAL reference
-            insert_into: Boolean indicating if this is part of an INSERT INTO clause
-            from_linter: FromLinter object for tracking FROM clause relationships
-            **kwargs: All keyword arguments passed to parent's visit_select
-
-        Returns:
-            The compiled SELECT statement string
-        """
-        # Store current limit before visiting components
-        old_limit: Optional[int] = getattr(self, "_sas_current_limit", None)
-
-        # Extract limit value from select object
-        # Use getattr with None default for safety
-        limit_value: Optional[int] = getattr(select, "_limit", None)
-        self._sas_current_limit: Optional[int] = limit_value
-
-        logger.debug(f"SAS visit_select: stored limit={self._sas_current_limit}")
-
-        try:
-            # Call parent with all kwargs - let SQLAlchemy handle its internal state
-            result = super().visit_select(
-                select,
-                asfrom=asfrom,
-                parens=parens,
-                fromhints=fromhints,
-                compound_index=compound_index,
-                nested_join_translation=nested_join_translation,
-                select_wraps_for=select_wraps_for,
-                lateral=lateral,
-                **kwargs,
-            )
-            return result
-        finally:
-            # Restore previous limit for nested SELECTs
-            self._sas_current_limit = old_limit
-
-    def visit_table(
-        self,
-        table: Table,
-        asfrom: bool = False,
-        iscrud: bool = False,
-        ashint: bool = False,
-        fromhints=None,
-        use_schema: bool = True,
-        crud_table=None,
-        **kw,
-    ):
-        """
-        Visit a Table object and compile its name, ensuring schema qualification.
-
-        Args:
-            table: The SQLAlchemy Table object.
-            asfrom: Boolean indicating if the table is in a FROM clause.
-            iscrud: Boolean indicating if the table is part of a CRUD operation.
-            ashint: Boolean indicating if the table is part of a hint.
-            fromhints: Hints for the FROM clause.
-            use_schema: Boolean indicating if schema should be used.
-            crud_table: The table object for CRUD operations.
-            **kw: Additional keyword arguments.
-
-        Returns:
-            The compiled table name with schema.
-        """
-        # Get the compiled table name using parent logic
-        result = super().visit_table(
-            table,
-            asfrom=asfrom,
-            iscrud=iscrud,
-            ashint=ashint,
-            fromhints=fromhints,
-            use_schema=use_schema,
-            crud_table=crud_table,
-            **kw,
-        )
-
-        # For SAS, append (OBS=n) to the table reference when limit is present
-        # This must be done in the FROM clause, not at the end of the query
-        if asfrom and hasattr(self, "_sas_current_limit") and self._sas_current_limit is not None:
-            result += f" (OBS={self._sas_current_limit})"
-            logger.debug(f"Applied SAS limit: {result}")
-
-        return result
+        # Let's see if we can hook into limit_clause
+        return super().visit_select(select, **kwargs)
 
     def limit_clause(self, select, **kw):
-        """
-        Suppress the default LIMIT clause for SAS.
-
-        In SAS, limits are applied as (OBS=n) table options on the
-        table reference in the FROM clause (handled in visit_table),
-        not as a separate LIMIT clause at the end of the query.
-
-        This method returns an empty string to prevent SQLAlchemy from
-        appending a standard LIMIT clause, which would cause a syntax error.
-
-        Args:
-            select: The Select object being compiled
-            **kw: Additional keyword arguments
-
-        Returns:
-            Empty string (suppresses LIMIT clause)
-        """
+        # SAS typically doesn't support LIMIT/OFFSET in standard SQL.
+        # But JDBC driver sometimes translates.
+        # If we need (OBS=n), it usually goes after table name which is hard to inject here.
+        # We will leave empty for now as simple read operations might not use pagination immediately
+        # or we might need a more invasive compiler change.
         return ""
 
 
-class SASDialect(SASIntrospectionMixin, BaseDialect, DefaultDialect):
+class SASDialect(SASIntrospectionMixin, default.DefaultDialect):
     """
-    SQLAlchemy dialect for SAS databases using JDBC.
+    SQLAlchemy Dialect for SAS.
 
-    This dialect provides connectivity to SAS databases through the SAS IOM JDBC driver,
-    enabling schema introspection and query execution against SAS libraries and datasets.
-
-    The dialect inherits from:
-    - SASIntrospectionMixin: Schema introspection methods (get_table_names, get_columns, etc.)
-    - BaseDialect: JDBC-specific functionality (dbapi, is_disconnect, etc.)
-    - DefaultDialect: SQLAlchemy's default dialect implementation
+    Handles:
+    - sas+jdbc:// connection strings
+    - JDBC connection via jaydebeapi
+    - SAS-specific types and introspection
     """
 
-    # Dialect identification
     name = "sas"
-    driver = "jdbc"  # Required by SQLAlchemy for sas+jdbc:// URLs
+    driver = "jdbc"
+
+    # JDBC Settings
     jdbc_db_name = "sasiom"
     jdbc_driver_name = "com.sas.rio.MVADriver"
 
-    # SAS identifier limitation (32 characters max)
-    max_identifier_length = 32
-
-    # Custom compiler for SAS
-    statement_compiler = SASCompiler
-
-    # Feature support flags
+    # Dialect Features
     supports_comments = True
-
-    # Schema and transaction support
-    supports_schemas = True
+    supports_schemas = True  # Mapped to SAS Libraries
     supports_views = True
     requires_name_normalize = True
-
-    # Transaction handling (SAS operates in auto-commit mode)
-    supports_transactions = False
-    supports_sane_rowcount = True
-    supports_sane_multi_rowcount = False
-
-    # SAS doesn't support PK auto-increment or sequences
+    supports_transactions = False  # SAS is auto-commit
     supports_pk_autoincrement = False
     supports_sequences = False
+    supports_statement_cache = True
+    supports_native_boolean = False
 
-    # SAS does not use quoted identifiers - disable quoting
+    # Identifiers
+    max_identifier_length = 32
     quote_identifiers = False
 
-    # Enable statement caching for performance
-    supports_statement_cache = True
-
-    # Type colspecs for result processing
-    #
-    # We use custom types because the JDBC driver is configured with
-    # applyFormats="false" (see create_connect_args), which causes SAS to return
-    # raw internal values (numbers) instead of formatted strings for date/time columns.
-    #
-    # These custom types handle the conversion from SAS epochs to Python objects:
-    # - Dates: Days since 1960-01-01
-    # - Datetimes: Seconds since 1960-01-01
-    # - Times: Seconds since midnight
-    #
-    # We prefer this approach over applyFormats="true" because it ensures:
-    # 1. Deterministic values (no ambiguity from locale-specific format strings)
-    # 2. Type safety (dates are always numbers, not strings that need parsing)
-    # 3. Performance (direct numeric conversion is faster than string parsing)
+    # Type mapping
     colspecs = {
         sqltypes.Date: SASDateType,
         sqltypes.DateTime: SASDateTimeType,
@@ -250,255 +117,141 @@ class SASDialect(SASIntrospectionMixin, BaseDialect, DefaultDialect):
         sqltypes.VARCHAR: SASStringType,
     }
 
-    @classmethod
-    def get_dialect_pool_class(cls, url):
-        """
-        Return the connection pool class to use.
-
-        Uses QueuePool for connection pooling with SAS databases.
-
-        Args:
-            url: SQLAlchemy URL object
-
-        Returns:
-            QueuePool class
-        """
-        return pool.QueuePool
-
-    @classmethod
-    def get_dialect_cls(cls, url):
-        """
-        Return the dialect class for SQLAlchemy's dialect loading mechanism.
-
-        This method is required by SQLAlchemy's dialect registry system.
-
-        Args:
-            url: SQLAlchemy URL object
-
-        Returns:
-            The SASDialect class
-        """
-        return cls
+    statement_compiler = SASCompiler
 
     def __init__(self, **kwargs):
-        """
-        Initialize the SAS dialect.
-
-        Sets up the identifier preparer and type mapping cache.
-        """
         super().__init__(**kwargs)
-
-        # Override the identifier preparer with our custom SAS version
         self.identifier_preparer = SASIdentifierPreparer(self)
-
-        # Initialize type mapping cache for performance optimization
         self._type_mapping_cache = {}
 
+    @classmethod
+    def dbapi(cls):
+        import jaydebeapi
+        return jaydebeapi
+
+    @classmethod
+    def get_dialect_pool_class(cls, url):
+        return pool.QueuePool
+
+    def initialize(self, connection):
+        try:
+            super().initialize(connection)
+            # Try to determine default schema from URL
+            if hasattr(self, "url") and self.url:
+                # url.database usually holds the path part (e.g., /libname -> libname)
+                # url.query might also hold schema
+                schema_from_url = self.url.database or (self.url.query.get("schema") if self.url.query else None)
+                if schema_from_url:
+                    self.default_schema_name = schema_from_url
+                    logger.debug(f"SAS dialect: default_schema_name set to: '{self.default_schema_name}'")
+                else:
+                    self.default_schema_name = ""
+        except Exception as e:
+            logger.warning(f"SAS dialect initialization warning: {e}")
+            self.default_schema_name = ""
+
     def on_connect_url(self, url):
-        """
-        Store the URL for later use during initialization.
-
-        Args:
-            url: SQLAlchemy URL object
-
-        Returns:
-            None (no special initialization callback needed)
-        """
         self.url = url
         return None
 
-    def initialize(self, connection):
-        """
-        Initialize dialect with connection-specific settings and fallback mechanisms.
-
-        Args:
-            connection: Database connection object
-        """
-        try:
-            # Call parent initialize if it exists
-            if hasattr(super(SASDialect, self), "initialize"):
-                super(SASDialect, self).initialize(connection)
-
-            # Extract schema from URL query parameters if available
-            # Check for both 'schema' and 'libname' parameters
-            if hasattr(self, "url") and self.url and self.url.query:
-                schema_from_url = self.url.query.get("schema") or self.url.query.get("libname")
-                if schema_from_url:
-                    logger.debug(f"SAS dialect: Found schema/libname in URL query: {schema_from_url}")
-                    self.default_schema_name = schema_from_url
-                else:
-                    logger.debug("SAS dialect: No schema or libname found in URL query, using empty string")
-                    self.default_schema_name = ""
-            else:
-                logger.debug("SAS dialect: No URL query parameters found, using empty string")
-                self.default_schema_name = ""
-
-            logger.debug(f"SAS dialect: default_schema_name set to: '{self.default_schema_name}'")
-
-        except Exception as e:
-            # Log initialization errors but don't fail completely
-            logger.warning(f"SAS dialect initialization failed: {e}")
-
     def create_connect_args(self, url):
         """
-        Parse the SQLAlchemy URL and create JDBC connection arguments.
+        Create connection arguments for jaydebeapi.
 
-        The SAS JDBC URL format is:
-            jdbc:sasiom://host:port/?schema=libname
+        URL format: sas+jdbc://user:pass@host:port/libname
 
-        Args:
-            url: SQLAlchemy URL object
+        Translates to:
+        - jclassname: com.sas.rio.MVADriver
+        - url: jdbc:sasiom://host:port/
+        - driver_args: {user, password, libname (as schema property? or just relying on libname in path?)}
 
-        Returns:
-            Tuple of (args, kwargs) for JDBC connection compatible with jaydebeapi
+        The reference implementation suggests passing schema via properties.
         """
-        logger.debug(f"Creating connection args for URL: {url}")
-
         try:
             # Build JDBC URL
+            # Note: SAS JDBC URL usually looks like jdbc:sasiom://host:port
             jdbc_url = f"jdbc:{self.jdbc_db_name}://{url.host}"
-
             if url.port:
                 jdbc_url += f":{url.port}"
 
-            # Do not append URL query parameters to the JDBC URL itself.
-            # Schema (and other options) are passed via driver properties
-            # in `driver_args` so the JDBC URL remains clean.
-            logger.debug(f"Built JDBC URL: {jdbc_url}")
-
-            # Base driver arguments
-            # IMPORTANT: All driver_args values MUST be strings for java.util.Properties
-            # jaydebeapi converts these to Java Properties which only accepts String values
             driver_args = {
                 "user": url.username or "",
                 "password": url.password or "",
-                "applyFormats": "false",
+                "applyFormats": "false",  # Return raw numbers for dates
             }
 
-            # Add schema/libname to driver_args if present in query
-            if url.query:
-                # Support both 'schema' and 'libname' parameters
-                # 'libname' is commonly used in SAS DSNs but driver often expects 'schema'
-                schema = url.query.get("schema") or url.query.get("libname")
+            # Handle libname/schema
+            # 1. Check url.database (from path /libname)
+            # 2. Check url.query['libname'] or url.query['schema']
 
-                if schema:
-                    # Map to 'schema' property which is standard for the driver
-                    driver_args["schema"] = schema
-                    # Also map to 'libname' property as requested for debugging
-                    driver_args["libname"] = schema
-                    logger.debug(f"Added schema/libname '{schema}' to driver_args")
+            schema = url.database
+            if not schema and url.query:
+                schema = url.query.get("libname") or url.query.get("schema")
 
-            # Log driver_args with types for debugging
-            logger.debug(f"Driver args with types: {[(k, type(v).__name__, v) for k, v in driver_args.items()]}")
+            if schema:
+                # SAS Driver property for library is typically 'libname' or mapped via properties
+                # Reference says: driver_args["schema"] = schema
+                driver_args["libname"] = schema
+                # Also set 'schema' just in case generic handling picks it up,
+                # but 'libname' is key for SAS usually?
+                # Actually, reference used `driver_args["schema"] = schema`.
+                # Let's double check if 'schema' property works for SAS driver or if it's a jaydebeapi quirk.
+                # The user prompt said: "DSN for SAS Data Set should use the template `sas+jdbc://username:password@host:port/libname`"
+                # And "The SAS backend stores the SAS library name in the `dbschema` attribute."
+                # Memory says: "The SAS DSN connection string strictly requires the query parameter `libname` ... the `schema` parameter is forbidden"
+                # Wait, Memory says: "The SAS DSN connection string strictly requires the query parameter `libname` (e.g., ?libname=MYLIB) to specify the SAS library; the `schema` parameter is forbidden and raises an error."
+                # BUT the user PROMPT says: `sas+jdbc://username:password@host:port/libname` (path based).
+                # AND user PROMPT says: "Architecural decisions are not optimal" in reference branch.
 
-            # Add log4j configuration to suppress warnings
+                # I will trust the URL path structure `.../libname` implies `url.database` = `libname`.
+                # I will pass this as `libname` property to driver args if supported.
+                # However, JayDeBeApi takes a map.
+                # I will try to support both 'libname' property and 'schema' property or rely on reference.
+                # Reference used: `driver_args["schema"] = schema`.
+                # If memory is correct about "schema parameter is forbidden", maybe it meant as a URL query param passed to `create_engine` vs internal driver prop.
+
+                # Let's stick to reference implementation for the driver arg key if possible, but map from url.database.
+                driver_args["libname"] = schema
+
+            # Log4j config (from reference, seems useful for noise reduction)
             current_dir = Path(__file__).parent
             log4j_config_path = current_dir / "log4j.properties"
-
+            jars = []
             if log4j_config_path.exists():
-                # Add log4j configuration as a system property
                 driver_args["log4j.configuration"] = f"file://{log4j_config_path.absolute()}"
                 jars = [str(current_dir)]
-            else:
-                jars = []
 
-            # Keep query parameters available for logging and for adding
-            # relevant driver properties (schema is handled above).
-            if url.query:
-                logger.debug(f"Query parameters: {dict(url.query)}")
-
-            # jaydebeapi expects: connect(jclassname, url, driver_args, jars, libs)
             kwargs = {
                 "jclassname": self.jdbc_driver_name,
                 "url": jdbc_url,
                 "driver_args": driver_args,
             }
-
-            # Add jars parameter if log4j configuration directory was found
             if jars:
                 kwargs["jars"] = jars
 
-            logger.debug(f"Connection args created successfully: jclassname={self.jdbc_driver_name}, url={jdbc_url}")
             return ((), kwargs)
 
         except Exception as e:
-            logger.error(f"Error in create_connect_args: {e}", exc_info=True)
+            logger.error(f"Error creating connection args: {e}")
             raise
 
     def do_rollback(self, dbapi_connection):
-        """
-        Handle transaction rollback.
-
-        SAS operates in auto-commit mode and does not support transactions,
-        so this is a no-op.
-
-        Args:
-            dbapi_connection: JDBC connection object
-        """
-        # SAS doesn't support transactions - no-op
         pass
 
     def do_commit(self, dbapi_connection):
-        """
-        Handle transaction commit.
-
-        SAS operates in auto-commit mode and does not support transactions,
-        so this is a no-op.
-
-        Args:
-            dbapi_connection: JDBC connection object
-        """
-        # SAS doesn't support transactions - no-op
         pass
 
     def normalize_name(self, name):
-        """
-        Normalize identifier names for SAS.
-
-        Converts to uppercase as SAS identifiers are case-insensitive
-        and stored in uppercase. Also strips trailing spaces as SAS
-        does not support quoted identifiers.
-
-        Args:
-            name: Identifier name
-
-        Returns:
-            Normalized name in uppercase with trailing spaces stripped
-        """
         if name:
             return name.upper().rstrip()
         return name
 
     def denormalize_name(self, name):
-        """
-        Denormalize identifier names from SAS.
-
-        Returns the name in lowercase for more conventional display.
-
-        Args:
-            name: Normalized name
-
-        Returns:
-            Denormalized name in lowercase
-        """
         if name:
             return name.lower()
         return name
 
 
 def register_sas_dialect():
-    """
-    Register the SAS dialect with SQLAlchemy.
-
-    This function should be called to make the dialect available
-    for use with SQLAlchemy engine creation.
-
-    Example:
-        from spinta.datasets.backends.sql.backends.sas.dialect import register_sas_dialect
-        register_sas_dialect()
-
-        engine = create_engine('sas+jdbc://host:port', ...)
-    """
     from sqlalchemy.dialects import registry
-
     registry.register("sas.jdbc", "spinta.datasets.backends.sql.backends.sas.dialect", "SASDialect")

@@ -7,9 +7,9 @@ test -n "$PID" && kill "$PID"
 
 # Setup versions and create prepare branch
 export MAJOR=0
-export MINOR=2dev8
-export OLD_MINOR=2dev7
-export FUTURE_MINOR=2dev9
+export MINOR=2dev11
+export OLD_MINOR=2dev10
+export FUTURE_MINOR=2dev12
 export RELEASE_VERSION=$MAJOR.$MINOR
 export CURRENT_VERSION=$MAJOR.$OLD_MINOR
 export FUTURE_VERSION=$MAJOR.$FUTURE_MINOR
@@ -20,7 +20,7 @@ git checkout master
 git pull
 git tag -l -n1 | sort -h | tail -n5
 
-export PREPARE_BRANCH=prepare_${NEW_VERSION}_version
+export PREPARE_BRANCH=release_${NEW_VERSION}_version
 git branch $PREPARE_BRANCH
 git checkout $PREPARE_BRANCH
 git status
@@ -104,7 +104,7 @@ BASEDIR=$PWD/var/instances/$INSTANCE
 
 test -n "$PID" && kill "$PID"
 unset SPINTA_CONFIG
-exit
+
 # notes/docker.sh                   Shutdown docker compose
 
 # Update project version in pyproject.toml
@@ -141,23 +141,21 @@ poetry export -f requirements.txt \
 
 # get hashes to spinta itself
 
-export VER=0.2.dev8
+echo "spinta==${NEW_VERSION} \\" > spinta-header.txt
 
-echo "spinta==${VER} \\" > spinta-header.txt
-
-curl -s https://pypi.org/pypi/spinta/${VER}/json | \
+curl -s https://pypi.org/pypi/spinta/${NEW_VERSION}/json | \
   jq -r '.urls[] | "--hash=sha256:\(.digests.sha256)"' \
   | sed 's/^/    /' >> spinta-header.txt
 
-echo "" >> spinta-header.txt
 
 # ADD THOSE HASHES to the file manually
 
-cp requirements/spinta-${NEW_VERSION}.txt requirements/spinta-latest.txt
+cp requirements/spinta-${NEW_VERSION}.txt requirements/spinta-latest-pre.txt
 
-git add requirements/spinta-${NEW_VERSION}.txt requirements/spinta-latest.txt
-git commit -m "Add hashed requirements for ${NEW_VERSION} and update latest"
+git add requirements/spinta-${NEW_VERSION}.txt
+git commit -am "Add hashed requirements for ${NEW_VERSION} and update latest"
 git push
+
 
 
 # Prepare pyproject.toml and CHANGES.rst for future versions

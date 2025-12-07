@@ -3,73 +3,49 @@ SAS Backend Component
 
 This module provides the main backend component class for SAS database integration
 within the Spinta framework.
-
-The SAS backend extends the generic SQL backend to provide SAS-specific functionality,
-leveraging the custom SAS dialect implemented in dialect.py for SQLAlchemy integration.
 """
 
 import logging
-
 import sqlalchemy as sa
+from sqlalchemy.engine.url import make_url
 
 from spinta.components import Model
 from spinta.datasets.backends.sql.components import Sql
+from spinta.datasets.backends.sql.backends.sas.dialect import register_sas_dialect
 
 logger = logging.getLogger(__name__)
+
+# Register the dialect immediately upon module import
+register_sas_dialect()
 
 
 class SAS(Sql):
     """
     SAS Backend Component for Spinta framework.
-
-    This backend provides connectivity to SAS databases through JDBC,
-    enabling data access from SAS libraries and datasets.
-
-    Attributes:
-        type: Backend type identifier ("sql/sas")
-        query_builder_type: Query builder type identifier ("sql/sas")
     """
 
     type = "sql/sas"
     query_builder_type = "sql/sas"
 
     def __init__(self, **kwargs):
-        """
-        Initialize the SAS backend.
-
-        Extracts libname from the DSN URL if not already set.
-        """
         super().__init__(**kwargs)
-        # Extract libname from DSN URL if not already set
+        # Extract schema/libname from DSN if not already set
         if hasattr(self, "dsn") and self.dsn and not self.dbschema:
-            from sqlalchemy.engine.url import make_url
-
             url = make_url(self.dsn)
-            libname = url.query.get("libname")
-            if libname:
-                self.dbschema = libname
+            # Try path first (url.database) then query
+            schema = url.database
+            if not schema and url.query:
+                schema = url.query.get("libname") or url.query.get("schema")
 
-    def get_table(self, model: Model, name: str | None = None) -> sa.Table:
-        """
-        Get or create a SQLAlchemy Table object for a model.
+            if schema:
+                self.dbschema = schema
 
-        Overrides the base implementation to handle SAS-specific schema resolution.
-
-        SAS requires special handling because:
-        1. Schema names are called "libraries" in SAS terminology
-        2. The schema may be specified in the URL query parameters (libname)
-
-        Args:
-            model: The model to get the table for
-            name: Optional table name override
-
-        Returns:
-            SQLAlchemy Table object
-        """
+    def get_table(self, model: Model, name: str = None) -> sa.Table:
         name = name or model.external.name
 
-        # Use backend's dbschema
         effective_schema = self.dbschema
+        if not effective_schema and hasattr(self.engine.dialect, "default_schema_name"):
+            effective_schema = self.engine.dialect.default_schema_name
 
         if effective_schema:
             key = f"{effective_schema}.{name}"
@@ -77,18 +53,19 @@ class SAS(Sql):
             key = name
 
         if key not in self.schema.tables:
-            # Create table with schema - SQLAlchemy will store it with the schema in the key
+            # Create table with schema
             sa.Table(name, self.schema, autoload_with=self.engine, schema=effective_schema)
 
-        # Try to get the table with schema first, then without
         if key in self.schema.tables:
             return self.schema.tables[key]
         elif name in self.schema.tables:
-            # Fallback: table might be stored without schema prefix
             return self.schema.tables[name]
         else:
-            # Last resort: search for the table by name
+            # Case insensitive search fallback
+            target = name.upper()
             for table_key, table_obj in self.schema.tables.items():
-                if table_obj.name == name:
+                if table_obj.name.upper() == target:
                     return table_obj
+
             raise KeyError(f"Table '{name}' not found in schema")
+import spinta.datasets.backends.sql.backends.sas.commands.column  # noqa
