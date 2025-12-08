@@ -68,4 +68,3 @@ class SAS(Sql):
                     return table_obj
 
             raise KeyError(f"Table '{name}' not found in schema")
-import spinta.datasets.backends.sql.backends.sas.commands.column  # noqa

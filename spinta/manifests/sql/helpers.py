@@ -382,7 +382,7 @@ def _create_dataset_for_schema(
 @cachetools.cached(cache=cachetools.LRUCache(maxsize=1024))
 def oracle_maintained_schemas(engine: Engine) -> Iterator[str]:
     query = sa.text("""
-        SELECT USERNAME
+        SELECT USERNAME 
         FROM ALL_USERS
         WHERE ORACLE_MAINTAINED = 'Y'
     """)
