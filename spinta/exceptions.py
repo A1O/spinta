@@ -1180,7 +1180,7 @@ class InvalidCustomPropertyTypeConfiguration(UserError):
 class InvalidCustomPropertyTypeWithArgsConfiguration(UserError):
     template = """
         Unable to import custom property type: {custom_property_type!r}.
-        
+
         Using args: {args}.
     """
 
