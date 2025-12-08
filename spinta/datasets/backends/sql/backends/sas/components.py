@@ -35,7 +35,7 @@ class SAS(Sql):
             # Try path first (url.database) then query
             schema = url.database
             if not schema and url.query:
-                schema = url.query.get("libname") or url.query.get("schema")
+                schema = url.query.get("libname")
 
             if schema:
                 self.dbschema = schema

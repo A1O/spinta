@@ -76,7 +76,7 @@ class SASCompiler(compiler.SQLCompiler):
         return ""
 
 
-class SASDialect(SASIntrospectionMixin, default.DefaultDialect):
+class SASDialect(default.DefaultDialect, SASIntrospectionMixin):
     """
     SQLAlchemy Dialect for SAS.
 
@@ -140,7 +140,7 @@ class SASDialect(SASIntrospectionMixin, default.DefaultDialect):
             if hasattr(self, "url") and self.url:
                 # url.database usually holds the path part (e.g., /libname -> libname)
                 # url.query might also hold schema
-                schema_from_url = self.url.database or (self.url.query.get("schema") if self.url.query else None)
+                schema_from_url = self.url.database or (self.url.query.get("libname") if self.url.query else None)
                 if schema_from_url:
                     self.default_schema_name = schema_from_url
                     logger.debug(f"SAS dialect: default_schema_name set to: '{self.default_schema_name}'")
@@ -186,31 +186,9 @@ class SASDialect(SASIntrospectionMixin, default.DefaultDialect):
 
             schema = url.database
             if not schema and url.query:
-                schema = url.query.get("libname") or url.query.get("schema")
+                schema = url.query.get("libname")
 
             if schema:
-                # SAS Driver property for library is typically 'libname' or mapped via properties
-                # Reference says: driver_args["schema"] = schema
-                driver_args["libname"] = schema
-                # Also set 'schema' just in case generic handling picks it up,
-                # but 'libname' is key for SAS usually?
-                # Actually, reference used `driver_args["schema"] = schema`.
-                # Let's double check if 'schema' property works for SAS driver or if it's a jaydebeapi quirk.
-                # The user prompt said: "DSN for SAS Data Set should use the template `sas+jdbc://username:password@host:port/libname`"
-                # And "The SAS backend stores the SAS library name in the `dbschema` attribute."
-                # Memory says: "The SAS DSN connection string strictly requires the query parameter `libname` ... the `schema` parameter is forbidden"
-                # Wait, Memory says: "The SAS DSN connection string strictly requires the query parameter `libname` (e.g., ?libname=MYLIB) to specify the SAS library; the `schema` parameter is forbidden and raises an error."
-                # BUT the user PROMPT says: `sas+jdbc://username:password@host:port/libname` (path based).
-                # AND user PROMPT says: "Architecural decisions are not optimal" in reference branch.
-
-                # I will trust the URL path structure `.../libname` implies `url.database` = `libname`.
-                # I will pass this as `libname` property to driver args if supported.
-                # However, JayDeBeApi takes a map.
-                # I will try to support both 'libname' property and 'schema' property or rely on reference.
-                # Reference used: `driver_args["schema"] = schema`.
-                # If memory is correct about "schema parameter is forbidden", maybe it meant as a URL query param passed to `create_engine` vs internal driver prop.
-
-                # Let's stick to reference implementation for the driver arg key if possible, but map from url.database.
                 driver_args["libname"] = schema
 
             # Log4j config (from reference, seems useful for noise reduction)
